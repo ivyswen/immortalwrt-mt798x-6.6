@@ -1,4 +1,4 @@
-name: Build AX3000T
+name: Build 360T7
 
 on:
   workflow_dispatch:
@@ -65,6 +65,7 @@ jobs:
           cat .github/ax3000t/extra.config >> .config
           make defconfig
           echo "== devices ==";  grep '^CONFIG_TARGET_DEVICE_.*=y' .config
+          grep -q '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_qihoo_360t7=y' .config
           echo "== passwall/mosdns ==";  grep -E 'passwall|mosdns|sing-box|xray' .config
           grep -q '^CONFIG_PACKAGE_luci-app-passwall=y' .config
           grep -q '^CONFIG_PACKAGE_sing-box=y' .config
@@ -84,19 +85,19 @@ jobs:
       - name: Collect
         run: |
           mkdir -p out
-          find openwrt/bin/targets -type f \( -name '*ax3000t*' -o -name '*.manifest' -o -name 'sha256sums' \) -exec cp {} out/ \;
+          find openwrt/bin/targets -type f \( -name '*360t7*' -o -name '*.manifest' -o -name 'sha256sums' \) -exec cp {} out/ \;
           cp final.config out/config.txt
           ls -lh out
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ax3000t-firmware
+          name: 360t7-firmware
           path: out/
 
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="ax3000t-$(date +%Y%m%d-%H%M)"
+          TAG="360t7-$(date +%Y%m%d-%H%M)"
           gh release create "$TAG" out/* -R "$GITHUB_REPOSITORY" -t "$TAG" \
             -n "源码 ${GITHUB_REPOSITORY}@${SRC_COMMIT}  PassWall ${PW_VER}  sing-box ${SB_VER}  MosDNS ${MOSDNS_VER}"
