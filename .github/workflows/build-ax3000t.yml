@@ -1,0 +1,102 @@
+name: Build AX3000T
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/ax3000t/extra.config', '.github/workflows/build-ax3000t.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: openwrt
+          fetch-depth: 1
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Install build deps
+        run: |
+          sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          df -h
+
+      - name: Source info
+        run: cd openwrt && echo "SRC_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Feeds + PassWall + MosDNS
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          # latest golang (sing-box / mosdns need new Go)
+          rm -rf feeds/packages/lang/golang
+          git clone --depth 1 https://github.com/sbwml/packages_lang_golang -b 26.x feeds/packages/lang/golang
+          # PassWall (Openwrt-Passwall org, latest main)
+          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,v2ray-plugin,xray-plugin,geoview,shadow-tls}
+          rm -rf feeds/luci/applications/luci-app-passwall
+          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
+          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
+          # MosDNS v5 (sbwml); geodata comes from passwall-packages
+          rm -rf feeds/packages/net/mosdns feeds/packages/net/v2dat feeds/luci/applications/luci-app-mosdns
+          git clone --depth 1 https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns
+          echo "PW_VER=$(grep -m1 '^PKG_VERSION' package/passwall-luci/luci-app-passwall/Makefile | cut -d= -f2)" >> $GITHUB_ENV
+          echo "SB_VER=$(grep -m1 '^PKG_VERSION' package/passwall-packages/sing-box/Makefile | cut -d= -f2)" >> $GITHUB_ENV
+          echo "MOSDNS_VER=$(grep -m1 '^PKG_VERSION' package/mosdns/mosdns/Makefile | cut -d= -f2)" >> $GITHUB_ENV
+
+      - name: Config
+        working-directory: openwrt
+        run: |
+          cp -f defconfig/mt7981-ax3000.config .config
+          sed -i '/^CONFIG_TARGET_DEVICE_/d' .config
+          cat .github/ax3000t/extra.config >> .config
+          make defconfig
+          echo "== devices ==";  grep '^CONFIG_TARGET_DEVICE_.*=y' .config
+          echo "== passwall/mosdns ==";  grep -E 'passwall|mosdns|sing-box|xray' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-passwall=y' .config
+          grep -q '^CONFIG_PACKAGE_sing-box=y' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-mosdns=y' .config
+          ! grep -q '^CONFIG_PACKAGE_xray-core=y' .config
+          cp .config ../final.config
+
+      - name: Download
+        working-directory: openwrt
+        run: make download -j8 || make download -j1 V=s
+
+      - name: Build
+        working-directory: openwrt
+        run: |
+          make -j$(($(nproc)+1)) || make -j1 V=s
+
+      - name: Collect
+        run: |
+          mkdir -p out
+          find openwrt/bin/targets -type f \( -name '*ax3000t*' -o -name '*.manifest' -o -name 'sha256sums' \) -exec cp {} out/ \;
+          cp final.config out/config.txt
+          ls -lh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ax3000t-firmware
+          path: out/
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="ax3000t-$(date +%Y%m%d-%H%M)"
+          gh release create "$TAG" out/* -R "$GITHUB_REPOSITORY" -t "$TAG" \
+            -n "源码 ${GITHUB_REPOSITORY}@${SRC_COMMIT}  PassWall ${PW_VER}  sing-box ${SB_VER}  MosDNS ${MOSDNS_VER}"
